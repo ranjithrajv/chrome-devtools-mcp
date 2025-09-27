@@ -16,6 +16,7 @@ import type {
   Target,
 } from 'puppeteer-core';
 import puppeteer from 'puppeteer-core';
+import { execSync } from 'child_process';
 
 let browser: Browser | undefined;
 
@@ -66,8 +67,47 @@ interface McpLaunchOptions {
   logFile?: fs.WriteStream;
 }
 
+function findSystemBrowser(channel?: Channel): string | undefined {
+  let executables: string[];
+
+  switch (channel) {
+    case 'stable':
+      executables = ['google-chrome-stable', 'google-chrome', 'chromium-browser', 'chromium', 'chrome'];
+      break;
+    case 'beta':
+      executables = ['google-chrome-beta', 'chromium-browser-beta'];
+      break;
+    case 'dev':
+      executables = ['google-chrome-unstable', 'chromium-browser-unstable'];
+      break;
+    case 'canary':
+      // Canary often has a specific installation path and not a simple executable in PATH.
+      // It's better to let puppeteer handle it.
+      return undefined;
+    default: // undefined channel
+      executables = [
+        'google-chrome-stable',
+        'google-chrome',
+        'chrome',
+        'chromium-browser',
+        'chromium',
+      ];
+  }
+
+  for (const executable of executables) {
+    try {
+      const stdout = execSync(`which ${executable}`, {encoding: 'utf8'});
+      return stdout.trim();
+    } catch (e) {
+      // Not found
+    }
+  }
+  return undefined;
+}
+
 export async function launch(options: McpLaunchOptions): Promise<Browser> {
-  const {channel, executablePath, customDevTools, headless, isolated} = options;
+  const { channel, customDevTools, headless, isolated } = options;
+  let { executablePath } = options;
   const profileDirName =
     channel && channel !== 'stable'
       ? `chrome-profile-${channel}`
@@ -90,18 +130,20 @@ export async function launch(options: McpLaunchOptions): Promise<Browser> {
   if (customDevTools) {
     args.push(`--custom-devtools-frontend=file://${customDevTools}`);
   }
-  let puppeterChannel: ChromeReleaseChannel | undefined;
+
+  let puppeteerChannel: ChromeReleaseChannel | undefined;
   if (!executablePath) {
-    puppeterChannel =
-      channel && channel !== 'stable'
-        ? (`chrome-${channel}` as ChromeReleaseChannel)
-        : 'chrome';
+    executablePath = findSystemBrowser(channel);
+
+    if (!executablePath && channel) {
+      puppeteerChannel = `chrome-${channel}` as ChromeReleaseChannel;
+    }
   }
 
   try {
     const browser = await puppeteer.launch({
       ...connectOptions,
-      channel: puppeterChannel,
+      channel: puppeteerChannel,
       executablePath,
       defaultViewport: null,
       userDataDir,
@@ -129,6 +171,14 @@ export async function launch(options: McpLaunchOptions): Promise<Browser> {
           cause: error,
         },
       );
+    }
+    if ((error as Error).message.includes('Could not find Chrome')) {
+        throw new Error(
+            `Could not find a compatible browser. You can specify the path to your browser executable using the --executablePath flag.`,
+            {
+                cause: error,
+            },
+        );
     }
     throw error;
   }
